@@ -1,0 +1,19 @@
+{
+	"@id": "",
+	"baseIri": "http://example.com/",
+	"sequence": [
+		{
+			"name": "data01",
+			"desription": "normal find find",
+			"@type": "PositiveEntailment",
+			"iri_suffix": "data01",
+			"compare": "data01.nq"
+		}, {
+			"name": "data02",
+			"desription": "find file in subdirectory to baseiri",
+			"@type": "PositiveEntailment",
+			"iri_suffix": "sub/data02",
+			"compare": "data02.nq"
+		}
+	]
+}

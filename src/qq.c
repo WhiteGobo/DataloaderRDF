@@ -1,0 +1,360 @@
+#include "DataloaderRDF.h"
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <cwalk.h>
+#include <dirent.h>
+#include "Mime2Rdf4C.h"
+
+
+/** https://www.manpagez.com/man/3/opendir/ **/
+#include <dirent.h>
+
+#if defined(WIN32) || defined(_WIN32) ||                                       \
+  defined(__WIN32) && !defined(__CYGWIN__)
+#define SEPARATOR '\\'
+#else
+#define SEPARATOR '/'
+#endif
+
+typedef enum {
+	RET_TLDFI_SUCCESS = 0,
+	RET_TLDFI_NOT_HANDLED_IRI,
+	RET_TLDFI_FAILURE,
+} RET_TLDFI;
+
+typedef struct s_Iri2Path Iri2Path;
+
+typedef struct s_DRDFDataloader {
+	Iri2Path* iri2path;
+} DRDFDataloader;
+
+typedef struct s_Iri2Path {
+	char* iri;
+	char* path;
+	Iri2Path *next;
+} Iri2Path;
+
+struct ret_TITD {
+	char* directory_path;
+	const char* basefilename;
+};
+
+static char* load_into_memory(const char* filepath);
+static int load_local_data(const char* path, TripleHandler* handler, void* user);
+static int64_t handle_data(const char* data, Mime2Rdf4C_ParserConfig* config,
+			TripleHandler* handler, void* user);
+static RET_TLDFI try_load_data_file_iri(
+		const char* iri, size_t iri_len, Iri2Path* iri2path,
+		TripleHandler* handler, void* user);
+static struct ret_TITD transform_iri_to_directory_path(
+		const char* iri, size_t iri_len, Iri2Path* iri2path);
+static char* my_join_path(const char* first, const char* second);
+
+/**
+ * Find last part of path in iri.
+ * iri: http://base.iri/some/path/file
+ *      |                        |      
+ *     iri                     return
+ */
+static const char* find_url_last_part_of_path(const char* iri);
+
+
+DRDFDataloader* DRDFDataloader_new(){
+	DRDFDataloader* ret = malloc(sizeof(DRDFDataloader));
+	if(ret == NULL){
+		return NULL;
+	}
+	ret->iri2path = NULL;
+	return ret;
+}
+
+static Iri2Path* Iri2Path_new(const char* path, const char* iri){
+	size_t len_path;
+	Iri2Path* ret = malloc(sizeof(Iri2Path));
+	if (ret == NULL) return NULL;
+	ret->iri = malloc(strlen(iri));
+	strcpy(ret->iri, iri);
+	len_path = strlen(path);
+	if (path[len_path - 1] == SEPARATOR){
+		ret->path = malloc(len_path + 1);
+		memcpy(ret->path, path, len_path);
+		ret->path[len_path] = '\0';
+	} else {
+		ret->path = malloc(len_path + 2);
+		memcpy(ret->path, path, len_path);
+		ret->path[len_path] = SEPARATOR;
+		ret->path[len_path + 1] = '\0';
+	}
+	ret->next = NULL;
+	return ret;
+}
+
+int DRDFDataloader_add_path_iri(DRDFDataloader* x, const char* basepath, const char* baseiri)
+{
+	if(x == NULL) return 1;
+	Iri2Path* first = Iri2Path_new(basepath, baseiri);
+	if(first == NULL) return 1;
+	first->next = x->iri2path;
+	x->iri2path = first;
+	return 0;
+}
+
+static struct ret_TITD transform_iri_to_directory_path(
+		const char* iri, size_t iri_len, Iri2Path* iri2path)
+{
+	size_t iri2path_iri_len, path_len;
+	struct ret_TITD ret = {
+		.basefilename = NULL,
+		.directory_path = NULL,
+	};
+	iri2path_iri_len = strlen(iri2path->iri);
+	//Check if iri is sub of iri in iri2path:
+	if (iri_len < iri2path_iri_len) {
+		ret.directory_path = NULL;
+		return ret;
+	}
+	if (0 != memcmp(iri, iri2path->iri, iri2path_iri_len)){
+		ret.directory_path = NULL;
+		return ret;
+	}
+	//create directory_path
+	path_len = strlen(iri2path->path) + strlen(iri) - strlen(iri2path->iri) + 10;
+
+	size_t offset, iri2path_path_len;
+	iri2path_path_len = strlen(iri2path->path);
+	// eg:
+	// iri2path->iri: http://base.iri/
+	// iri: http://base.iri/some/path/file
+	//      |               |        |      
+	//     iri           xstart     xend
+	const char* xstart = iri + iri2path_iri_len;
+	const char* xend = find_url_last_part_of_path(iri);
+	if (xend == NULL){
+		return ret;
+	}
+	ret.basefilename = xend + 1;
+	path_len = iri2path_path_len + (xend - iri) + 3;
+	ret.directory_path = malloc(path_len);
+	memcpy(ret.directory_path, iri2path->path, iri2path_path_len);
+	if (xend <= xstart){
+		ret.directory_path[iri2path_path_len] = '\0';
+	} else {
+		char* dst = ret.directory_path + iri2path_path_len;
+		//if linux
+		memcpy(dst, xstart, xend - xstart + 1);
+		dst[xend - xstart + 1] = '\0';
+		//if windows:
+		//for (const char* x = iri + iri2path_iri_len; x != l; x++){
+		//}
+	}
+	return ret;
+}
+
+
+static RET_TLDFI qq(const char* basefilename, size_t len_basefilename, const char* directory_path, DIR* searchdir, TripleHandler* handler, void* user)
+{
+	size_t _extlength;
+	const char* fileext;
+	size_t namelen;
+	char* path;
+	Mime2Rdf4C_ParserConfig* parse_config;
+	RET_TLDFI ret;
+	ret = RET_TLDFI_FAILURE;
+	for (struct dirent* dp = readdir(searchdir);
+			dp != NULL;
+			dp = readdir(searchdir))
+	{
+		switch(dp->d_type){
+			case DT_REG:
+				break;
+			default:
+				continue;
+		}
+		namelen = strlen(dp->d_name);
+		if (namelen < len_basefilename){
+			continue;
+		}
+		if (0 != memcmp(basefilename, dp->d_name, len_basefilename)){
+			continue;
+		}
+		if (namelen == len_basefilename){
+			//if iri is translated exactly to a file always
+			//return failure even if no parser can be found.
+			if (!cwk_path_get_extension(basefilename, &fileext, &_extlength)){
+				return RET_TLDFI_FAILURE;
+			}
+			parse_config = Mime2Rdf4C_get_parser_from_ext(fileext+1);
+			if (parse_config == NULL){
+				return RET_TLDFI_FAILURE;
+			}
+			path = my_join_path(directory_path, dp->d_name);
+			if (0 == load_local_data(path, handler, user)){
+				return RET_TLDFI_SUCCESS;
+			} else {
+				return RET_TLDFI_FAILURE;
+			}
+		}
+		//Expect to find extension of file
+		if (!cwk_path_get_extension(dp->d_name, &fileext, &_extlength)){
+			continue;
+		}
+		//File extension must be located directly behind basefilename
+		if (fileext != dp->d_name + len_basefilename){
+			continue;
+		}
+		parse_config = Mime2Rdf4C_get_parser_from_ext(fileext + 1);
+		if (parse_config == NULL){
+			continue;
+		}
+		path = my_join_path(directory_path, dp->d_name);
+		if (0 == load_local_data(path, handler, user)){
+			return RET_TLDFI_SUCCESS;
+		} else {
+			return RET_TLDFI_FAILURE;
+		}
+	}
+	return RET_TLDFI_FAILURE;
+}
+
+static RET_TLDFI try_load_data_file_iri(
+		const char* iri, size_t iri_len, Iri2Path* iri2path,
+		TripleHandler* handler, void* user)
+{
+	RET_TLDFI ret;
+	struct ret_TITD ret_titd;
+	const char* basefilename;
+	const char* fileext;
+	char* directory_path;
+	size_t len_basefilename;
+	DIR* searchdir;
+
+	ret_titd = transform_iri_to_directory_path(iri, iri_len, iri2path);
+	directory_path = ret_titd.directory_path;
+	basefilename = ret_titd.basefilename;
+
+	if (directory_path == NULL){
+		return RET_TLDFI_NOT_HANDLED_IRI;
+	}
+	len_basefilename = strlen(basefilename);
+	//Iri is handled by this iri2path. Try to find file:
+	searchdir = opendir(directory_path);
+	if (searchdir == NULL){
+		return RET_TLDFI_FAILURE;
+	}
+	ret = qq(basefilename, len_basefilename, directory_path, searchdir, handler, user);
+	closedir(searchdir);
+	return ret;
+}
+
+
+int DRDFDataloader_load_data(DRDFDataloader* x, const char* iri, TripleHandler* handler, void* user)
+{
+	size_t liri;
+	//find local files
+	liri = strlen(iri);
+	for (Iri2Path* iri2path = x->iri2path;
+			iri2path != NULL;
+			iri2path = iri2path->next)
+	{
+		switch(try_load_data_file_iri(iri, liri, iri2path, handler, user)){
+			case RET_TLDFI_SUCCESS:
+				return 0;
+			case RET_TLDFI_FAILURE:
+				return 1;
+			case RET_TLDFI_NOT_HANDLED_IRI:
+				break;
+		}
+	}
+	//
+	fprintf(stderr, "DRDFDataloader_load_data not implemented for not local sources\n");
+	return 1;
+}
+
+static char* load_into_memory(const char* filepath){
+        char *ret;
+        long fsize;
+        FILE *f = fopen(filepath, "rb");
+        if (f == NULL) return NULL;
+        fseek(f, 0, SEEK_END);
+        fsize = ftell(f);
+        rewind(f);
+        //fseek(f, 0, SEEK_SET);  /* same as rewind(f); */
+
+        ret = malloc(fsize + 1);
+        fread(ret, fsize, 1, f);
+        ret[fsize] = 0;
+        fclose(f);
+        return ret;
+}
+
+
+static int load_local_data(const char* path, TripleHandler* handler, void* user)
+{
+	int err;
+	char *tmpinput;
+	const char* ext;
+	Mime2Rdf4C_ParserConfig* config;
+	const char* found_ext;
+	size_t _ext_length;
+	if (!cwk_path_get_extension(path, &found_ext, &_ext_length)){
+		return 1;
+	}
+	config = Mime2Rdf4C_get_parser_from_ext(found_ext + 1);
+	if (config == NULL){
+		return 2;
+	}
+	tmpinput = load_into_memory(path);
+	if (tmpinput == NULL){
+		fprintf(stderr, "Internal Error: load_local_data failed to "
+				"load file: %s\n", path);
+		return 3;
+	}
+
+	err = handle_data(tmpinput, config, handler, user);
+	free(tmpinput);
+	if (err == 0){
+		return 0;
+	} else {
+		return 4;
+	}
+}
+
+static int64_t handle_data(const char* data, Mime2Rdf4C_ParserConfig* config,
+			TripleHandler* handler, void* user)
+{
+	int64_t err;
+	err = Mime2Rdf4C_parse(data, handler, user, config);
+	free_Mime2Rdf4CParserConfig(config);
+	return err;
+}
+
+static char* my_join_path(const char* first, const char* second){
+	char* ret;
+	size_t lfirst, lsecond, lbuffer, tmpi;
+	lfirst = strlen(first);
+	lsecond = strlen(second);
+	lbuffer = lfirst + lsecond + 3;
+	ret = malloc(lbuffer + 3);
+	if (ret == NULL){
+		return NULL;
+	}
+	tmpi = cwk_path_join(first, second, ret, lbuffer);
+	return ret;
+}
+
+static const char* find_url_last_part_of_path(const char* iri){
+	const char* ret = NULL;
+	if (iri == NULL) return NULL;
+	for(const char* x=iri; x[0] != '\0'; x++){
+		switch(*x){
+			case '/':
+				ret = x;
+				break;
+			case '?': //reached query
+			case '#':
+				return ret;
+		}
+	}
+	return ret;
+}
