@@ -34,3 +34,5 @@ typedef struct s_DRDFDataloader DRDFDataloader;
 DRDFDataloader* DRDFDataloader_new();
 int DRDFDataloader_add_path_iri(DRDFDataloader* x, const char* basepath, const char* baseiri);
 int DRDFDataloader_load_data(DRDFDataloader* x, const char* iri, TripleHandler* handler, void* user);
+
+void free_DRDFDataloader(DRDFDataloader*);

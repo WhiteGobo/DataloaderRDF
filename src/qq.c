@@ -50,6 +50,7 @@ static RET_TLDFI try_load_data_file_iri(
 static struct ret_TITD transform_iri_to_directory_path(
 		const char* iri, size_t iri_len, Iri2Path* iri2path);
 static char* my_join_path(const char* first, const char* second);
+static void free_Iri2Path(Iri2Path*);
 
 /**
  * Find last part of path in iri.
@@ -70,11 +71,25 @@ DRDFDataloader* DRDFDataloader_new(){
 	return ret;
 }
 
+void free_DRDFDataloader(DRDFDataloader* x){
+	if (x == NULL) return;
+	free_Iri2Path(x->iri2path);
+	free(x);
+}
+
+static void free_Iri2Path(Iri2Path* x){
+	if(x == NULL) return;
+	free_Iri2Path(x->next);
+	free(x->iri);
+	free(x->path);
+	free(x);
+}
+
 static Iri2Path* Iri2Path_new(const char* path, const char* iri){
 	size_t len_path;
 	Iri2Path* ret = malloc(sizeof(Iri2Path));
 	if (ret == NULL) return NULL;
-	ret->iri = malloc(strlen(iri));
+	ret->iri = malloc(strlen(iri) + 1);
 	strcpy(ret->iri, iri);
 	len_path = strlen(path);
 	if (path[len_path - 1] == SEPARATOR){
@@ -162,11 +177,11 @@ static struct ret_TITD transform_iri_to_directory_path(
 
 static RET_TLDFI qq(const char* basefilename, size_t len_basefilename, const char* directory_path, DIR* searchdir, TripleHandler* handler, void* user)
 {
+	int err;
 	size_t _extlength;
 	const char* fileext;
 	size_t namelen;
 	char* path;
-	Mime2Rdf4C_ParserConfig* parse_config;
 	RET_TLDFI ret;
 	ret = RET_TLDFI_FAILURE;
 	for (struct dirent* dp = readdir(searchdir);
@@ -192,15 +207,14 @@ static RET_TLDFI qq(const char* basefilename, size_t len_basefilename, const cha
 			if (!cwk_path_get_extension(basefilename, &fileext, &_extlength)){
 				return RET_TLDFI_FAILURE;
 			}
-			parse_config = Mime2Rdf4C_get_parser_from_ext(fileext+1);
-			if (parse_config == NULL){
-				return RET_TLDFI_FAILURE;
-			}
 			path = my_join_path(directory_path, dp->d_name);
-			if (0 == load_local_data(path, handler, user)){
-				return RET_TLDFI_SUCCESS;
-			} else {
-				return RET_TLDFI_FAILURE;
+			err = load_local_data(path, handler, user);
+			free(path);
+			switch(err){
+				case 0:
+					return RET_TLDFI_SUCCESS;
+				default:
+					return RET_TLDFI_FAILURE;
 			}
 		}
 		//Expect to find extension of file
@@ -211,15 +225,14 @@ static RET_TLDFI qq(const char* basefilename, size_t len_basefilename, const cha
 		if (fileext != dp->d_name + len_basefilename){
 			continue;
 		}
-		parse_config = Mime2Rdf4C_get_parser_from_ext(fileext + 1);
-		if (parse_config == NULL){
-			continue;
-		}
 		path = my_join_path(directory_path, dp->d_name);
-		if (0 == load_local_data(path, handler, user)){
-			return RET_TLDFI_SUCCESS;
-		} else {
-			return RET_TLDFI_FAILURE;
+		err = load_local_data(path, handler, user);
+		free(path);
+		switch(err){
+			case 0:
+				return RET_TLDFI_SUCCESS;
+			default:
+				return RET_TLDFI_FAILURE;
 		}
 	}
 	return RET_TLDFI_FAILURE;
@@ -248,9 +261,11 @@ static RET_TLDFI try_load_data_file_iri(
 	//Iri is handled by this iri2path. Try to find file:
 	searchdir = opendir(directory_path);
 	if (searchdir == NULL){
+		free(directory_path);
 		return RET_TLDFI_FAILURE;
 	}
 	ret = qq(basefilename, len_basefilename, directory_path, searchdir, handler, user);
+	free(directory_path);
 	closedir(searchdir);
 	return ret;
 }
@@ -320,6 +335,7 @@ static int load_local_data(const char* path, TripleHandler* handler, void* user)
 	}
 
 	err = handle_data(tmpinput, config, handler, user);
+	free_Mime2Rdf4CParserConfig(config);
 	free(tmpinput);
 	if (err == 0){
 		return 0;
@@ -333,7 +349,6 @@ static int64_t handle_data(const char* data, Mime2Rdf4C_ParserConfig* config,
 {
 	int64_t err;
 	err = Mime2Rdf4C_parse(data, handler, user, config);
-	free_Mime2Rdf4CParserConfig(config);
 	return err;
 }
 

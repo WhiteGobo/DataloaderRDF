@@ -44,6 +44,7 @@ int main(int argc, char *argv[]){
 					"with unhandled error\n");
 			exit(EXIT_FAILURE);
 	}
+	free_DRDFDataloader(dataloader);
 
 	fprintf(stderr, "No compare yet\n");
 	exit(EXIT_SUCCESS);
