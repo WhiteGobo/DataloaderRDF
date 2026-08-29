@@ -63,6 +63,7 @@ static const char* find_url_last_part_of_path(const char* iri);
 DRDFDataloader* DRDFDataloader_new(){
 	DRDFDataloader* ret = malloc(sizeof(DRDFDataloader));
 	if(ret == NULL){
+		fprintf(stderr, "CRITICAL ERROR: malloc failed\n");
 		return NULL;
 	}
 	ret->iri2path = NULL;
@@ -95,8 +96,15 @@ int DRDFDataloader_add_path_iri(DRDFDataloader* x, const char* basepath, const c
 	if(x == NULL) return 1;
 	Iri2Path* first = Iri2Path_new(basepath, baseiri);
 	if(first == NULL) return 1;
-	first->next = x->iri2path;
-	x->iri2path = first;
+        if (x->iri2path == NULL){
+                x->iri2path = first;
+        } else {
+                Iri2Path* ip = x->iri2path;
+                while(ip->next != NULL){
+                        ip = ip->next;
+                }
+                ip->next = first;
+        }	
 	return 0;
 }
 
