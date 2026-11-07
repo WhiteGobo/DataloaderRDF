@@ -1,0 +1,7 @@
+{
+  "@context": [
+    "sub/context.jsonld"
+  ],
+  "@id": "data03",
+  "rdf:type": "rdfs:Resource"
+}

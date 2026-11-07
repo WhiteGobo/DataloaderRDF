@@ -14,6 +14,12 @@
 			"@type": "PositiveEntailment",
 			"iri_suffix": "sub/data02",
 			"compare": "data02.nq"
+		}, {
+			"name": "data03",
+			"desription": "load relative context",
+			"@type": "PositiveEntailment",
+			"iri_suffix": "data03",
+			"compare": "data03-conclusion.nq"
 		}
 	]
 }

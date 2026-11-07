@@ -44,7 +44,7 @@ static char* load_into_memory(const char* filepath);
 static int load_local_data(const char* path, TripleHandler* handler, void* user);
 static int64_t handle_data(const char* data, Mime2Rdf4C_ParserConfig* config,
 			TripleHandler* handler, void* user);
-static RET_TLDFI try_load_data_file_iri(
+static RET_TLDFI try_load_data_file_iri(DRDFDataloader*,
 		const char* iri, size_t iri_len, Iri2Path* iri2path,
 		TripleHandler* handler, void* user);
 static struct ret_TITD transform_iri_to_directory_path(
@@ -238,7 +238,7 @@ static RET_TLDFI qq(const char* basefilename, size_t len_basefilename, const cha
 	return RET_TLDFI_FAILURE;
 }
 
-static RET_TLDFI try_load_data_file_iri(
+static RET_TLDFI try_load_data_file_iri(DRDFDataloader* x,
 		const char* iri, size_t iri_len, Iri2Path* iri2path,
 		TripleHandler* handler, void* user)
 {
@@ -280,7 +280,8 @@ int DRDFDataloader_load_data(DRDFDataloader* x, const char* iri, TripleHandler* 
 			iri2path != NULL;
 			iri2path = iri2path->next)
 	{
-		switch(try_load_data_file_iri(iri, liri, iri2path, handler, user)){
+		switch(try_load_data_file_iri(x, iri, liri, iri2path, handler, user))
+		{
 			case RET_TLDFI_SUCCESS:
 				return 0;
 			case RET_TLDFI_FAILURE:
@@ -327,6 +328,15 @@ static int load_local_data(const char* path, TripleHandler* handler, void* user)
 	if (config == NULL){
 		return 2;
 	}
+	switch(Mime2Rdf4C_util_use_file_as_base(config, path, NULL, 0)){
+		case 0:
+			break;
+		default:
+			fprintf(stderr, "Internal Error DRDF load_local_data"
+					"(util_use_file_as_base)\n");
+			return 4;
+	}
+
 	tmpinput = load_into_memory(path);
 	if (tmpinput == NULL){
 		fprintf(stderr, "Internal Error: load_local_data failed to "
