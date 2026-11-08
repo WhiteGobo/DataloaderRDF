@@ -35,6 +35,9 @@ int main(int argc, char *argv[]){
 					"with unkwown error\n");
 			exit(EXIT_FAILURE);
 	}
+	fprintf(stderr, "after add_path_iri: ");
+	fprintf_DRDFDataloader(stderr, dataloader);
+	fprintf(stderr, "\n");
 	err = DRDFDataloader_load_data(dataloader, loadiri, my_handler, cntxt);
 	switch(err){
 		case 0:
