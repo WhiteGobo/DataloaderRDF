@@ -391,3 +391,12 @@ static const char* find_url_last_part_of_path(const char* iri){
 	}
 	return ret;
 }
+
+
+void fprintf_DRDFDataloader(FILE* f, DRDFDataloader* data){
+	fprintf(f, "DRDFDataloader[");
+	for (Iri2Path* x=data->iri2path; x!=NULL; x=x->next){
+		fprintf(f, "%s=>%s;", x->iri, x->path);
+	}
+	fprintf(f, "]");
+}

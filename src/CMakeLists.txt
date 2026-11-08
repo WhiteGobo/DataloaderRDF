@@ -13,3 +13,5 @@ target_link_libraries(DataloaderRDF PRIVATE
 	cwalk
 	Mime2Rdf4C
 )
+
+set_target_properties(DataloaderRDF PROPERTIES C_VISIBILITY_PRESET hidden)
