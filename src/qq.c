@@ -45,8 +45,9 @@ static void release_TITD(struct ret_TITD x){
 	free(x.directory_path);
 }
 
+static int Iri2Path_config_parser(Iri2Path*, Mime2Rdf4C_ParserConfig*);
 static char* load_into_memory(const char* filepath);
-static int load_local_data(const char* path, TripleHandler* handler, void* user);
+static int load_local_data(Iri2Path* iri2path, const char* path, const char* baseiri, TripleHandler* handler, void* user);
 static int64_t handle_data(const char* data, Mime2Rdf4C_ParserConfig* config,
 			TripleHandler* handler, void* user);
 /*
@@ -183,11 +184,36 @@ static struct ret_TITD transform_iri_to_directory_path(
 	return ret;
 }
 
-static char* find_feasible_file(const char* basefilename, size_t len_basefilename, const char* directory_path){
+static char* find_feasible_file(Iri2Path* start_iri2path, const char* iri){
+
+	struct ret_TITD ret_titd;
+	size_t liri;
+	//find local files
+	liri = strlen(iri);
+	for (Iri2Path* iri2path = start_iri2path;
+			iri2path != NULL;
+			iri2path = iri2path->next)
+	{
+		ret_titd = transform_iri_to_directory_path(iri, liri, iri2path);
+		if(ret_titd.directory_path != NULL){
+			break;
+		}
+	}
+	if(ret_titd.directory_path == NULL){
+		fprintf(stderr, "ERROR DRDFDataloader_load_data(iri not "
+				"handled %s)\n", iri);
+		return NULL;
+	}
+	const char* basefilename = ret_titd.basefilename;
+	size_t len_basefilename = ret_titd.len_basefilename;
+	const char* directory_path = ret_titd.directory_path;
+
+
 	DIR* searchdir;
 	//Iri is handled by this iri2path. Try to find file:
 	searchdir = opendir(directory_path);
 	if (searchdir == NULL){
+		release_TITD(ret_titd);
 		return NULL;
 	}
 	char* path;
@@ -217,6 +243,7 @@ static char* find_feasible_file(const char* basefilename, size_t len_basefilenam
 			if (!cwk_path_get_extension(basefilename, &fileext, &_extlength)){
 				fprintf(stderr, "Internal Error (find_feasible_file)\n");
 				closedir(searchdir);
+				release_TITD(ret_titd);
 				return NULL;
 			}
 			path = my_join_path(directory_path, dp->d_name);
@@ -233,50 +260,36 @@ static char* find_feasible_file(const char* basefilename, size_t len_basefilenam
 		}
 		path = my_join_path(directory_path, dp->d_name);
 		closedir(searchdir);
+		release_TITD(ret_titd);
 		return path;
 	}
+	release_TITD(ret_titd);
 	closedir(searchdir);
+	return NULL;
 }
 
 
 int DRDFDataloader_load_data(DRDFDataloader* x, const char* iri, TripleHandler* handler, void* user)
 {
-	struct ret_TITD ret_titd;
-	size_t liri;
-	//find local files
-	liri = strlen(iri);
-	for (Iri2Path* iri2path = x->iri2path;
-			iri2path != NULL;
-			iri2path = iri2path->next)
-	{
-		ret_titd = transform_iri_to_directory_path(iri, liri, iri2path);
-		if(ret_titd.directory_path != NULL){
-			break;
-		}
-	}
-	if(ret_titd.directory_path == NULL){
-		fprintf(stderr, "ERROR DRDFDataloader_load_data(iri not "
-				"handled %s)\n", iri);
-		return 1;
-	}
 
 	char* path;
-	path = find_feasible_file(ret_titd.basefilename, ret_titd.len_basefilename, ret_titd.directory_path);
-	int ret = 1;
-	if(path != NULL){
-		switch(load_local_data(path, handler, user)){
-			case RET_TLDFI_SUCCESS:
-				ret = 0;
-				break;
-			case RET_TLDFI_FAILURE:
-			case RET_TLDFI_NOT_HANDLED_IRI:
-			default:
-				ret = 1;
-		}
-	} else {
-		ret = 1;
+	path = find_feasible_file(x->iri2path, iri);
+	if(path == NULL){
+		//find feasible should print what the error is
+		return 1;
 	}
-	release_TITD(ret_titd);
+	int ret = 1;
+	switch(load_local_data(x->iri2path, path, iri, handler, user)){
+		case RET_TLDFI_SUCCESS:
+			ret = 0;
+			break;
+		case RET_TLDFI_FAILURE:
+		case RET_TLDFI_NOT_HANDLED_IRI:
+		default:
+			fprintf(stderr, "ERROR DRDFDataloader failed to load "
+					"data for uri %s from %s\n", iri, path);
+			ret = 1;
+	}
 	return ret;
 }
 
@@ -297,8 +310,23 @@ static char* load_into_memory(const char* filepath){
         return ret;
 }
 
+static int Iri2Path_config_parser(Iri2Path* start_iri2path, Mime2Rdf4C_ParserConfig* parser)
+{
+	int err;
+	for (Iri2Path* iri2path = start_iri2path;
+			iri2path != NULL;
+			iri2path = iri2path->next)
+	{
+		err = Mime2Rdf4C_enable_LoadDocumentCallback_for_relativefiles(
+				parser, iri2path->iri, iri2path->path);
+		if(err != 0){
+			return 1;
+		}
+	}
+	return 0;
+}
 
-static int load_local_data(const char* path, TripleHandler* handler, void* user)
+static int load_local_data(Iri2Path* iri2path, const char* path, const char* baseiri, TripleHandler* handler, void* user)
 {
 	int err;
 	char *tmpinput;
@@ -307,25 +335,31 @@ static int load_local_data(const char* path, TripleHandler* handler, void* user)
 	const char* found_ext;
 	size_t _ext_length;
 	if (!cwk_path_get_extension(path, &found_ext, &_ext_length)){
+		//shouldnt be feasible file if extension isnt recognized
+		fprintf(stderr, "INTERNAL ERROR load_local_data(extension)\n");
 		return 1;
 	}
 	config = Mime2Rdf4C_get_parser_from_ext(found_ext + 1);
 	if (config == NULL){
+		fprintf(stderr, "INTERNAL ERROR load_local_data(extension2)\n");
 		return 2;
 	}
-	switch(Mime2Rdf4C_util_use_file_as_base(config, path, NULL, 0)){
-		case 0:
-			break;
-		default:
-			fprintf(stderr, "Internal Error DRDF load_local_data"
-					"(util_use_file_as_base)\n");
-			return 4;
+
+	err = Iri2Path_config_parser(iri2path, config);
+	if(err != 0){
+		fprintf(stderr, "INTERNAL ERROR DRDF load_local_data "
+				"(add iri2path)\n");
+		return 4;
+	}
+	err = Mime2Rdf4C_set_baseiri(config, baseiri);
+	if(err != 0){
+		fprintf(stderr, "INTERNAL ERROR DRDFload_local_data(baseiri)\n");
+		return 5;
 	}
 
 	tmpinput = load_into_memory(path);
 	if (tmpinput == NULL){
-		fprintf(stderr, "Internal Error: load_local_data failed to "
-				"load file: %s\n", path);
+		fprintf(stderr, "INTERNAL ERROR load_local_data(file)\n");
 		return 3;
 	}
 
