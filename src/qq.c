@@ -183,7 +183,13 @@ static struct ret_TITD transform_iri_to_directory_path(
 	return ret;
 }
 
-static char* find_feasible_file(const char* basefilename, size_t len_basefilename, const char* directory_path, DIR* searchdir){
+static char* find_feasible_file(const char* basefilename, size_t len_basefilename, const char* directory_path){
+	DIR* searchdir;
+	//Iri is handled by this iri2path. Try to find file:
+	searchdir = opendir(directory_path);
+	if (searchdir == NULL){
+		return NULL;
+	}
 	char* path;
 	size_t namelen;
 	size_t _extlength;
@@ -210,9 +216,11 @@ static char* find_feasible_file(const char* basefilename, size_t len_basefilenam
 			//return failure even if no parser can be found.
 			if (!cwk_path_get_extension(basefilename, &fileext, &_extlength)){
 				fprintf(stderr, "Internal Error (find_feasible_file)\n");
+				closedir(searchdir);
 				return NULL;
 			}
 			path = my_join_path(directory_path, dp->d_name);
+			closedir(searchdir);
 			return path;
 		}
 		//Expect to find extension of file
@@ -224,121 +232,11 @@ static char* find_feasible_file(const char* basefilename, size_t len_basefilenam
 			continue;
 		}
 		path = my_join_path(directory_path, dp->d_name);
+		closedir(searchdir);
 		return path;
 	}
-}
-
-static RET_TLDFI qq(const char* basefilename, size_t len_basefilename, const char* directory_path, DIR* searchdir, TripleHandler* handler, void* user)
-{
-	int err;
-	size_t _extlength;
-	const char* fileext;
-	size_t namelen;
-	char* path;
-	RET_TLDFI ret;
-	ret = RET_TLDFI_FAILURE;
-	path = find_feasible_file(basefilename, len_basefilename, directory_path, searchdir);
-	if(path == NULL){
-		return RET_TLDFI_FAILURE;
-	}
-	err = load_local_data(path, handler, user);
-	free(path);
-	switch(err){
-		case 0:
-			return RET_TLDFI_SUCCESS;
-		default:
-			return RET_TLDFI_FAILURE;
-	}
-
-	/*
-	for (struct dirent* dp = readdir(searchdir);
-			dp != NULL;
-			dp = readdir(searchdir))
-	{
-		switch(dp->d_type){
-			case DT_REG:
-				break;
-			default:
-				continue;
-		}
-		namelen = strlen(dp->d_name);
-		if (namelen < len_basefilename){
-			continue;
-		}
-		if (0 != memcmp(basefilename, dp->d_name, len_basefilename)){
-			continue;
-		}
-		if (namelen == len_basefilename){
-			//if iri is translated exactly to a file always
-			//return failure even if no parser can be found.
-			if (!cwk_path_get_extension(basefilename, &fileext, &_extlength)){
-				return RET_TLDFI_FAILURE;
-			}
-			path = my_join_path(directory_path, dp->d_name);
-			err = load_local_data(path, handler, user);
-			free(path);
-			switch(err){
-				case 0:
-					return RET_TLDFI_SUCCESS;
-				default:
-					return RET_TLDFI_FAILURE;
-			}
-		}
-		//Expect to find extension of file
-		if (!cwk_path_get_extension(dp->d_name, &fileext, &_extlength)){
-			continue;
-		}
-		//File extension must be located directly behind basefilename
-		if (fileext != dp->d_name + len_basefilename){
-			continue;
-		}
-		path = my_join_path(directory_path, dp->d_name);
-		err = load_local_data(path, handler, user);
-		free(path);
-		switch(err){
-			case 0:
-				return RET_TLDFI_SUCCESS;
-			default:
-				return RET_TLDFI_FAILURE;
-		}
-	}
-	return RET_TLDFI_FAILURE;
-	*/
-}
-
-/*
-static RET_TLDFI try_load_data_file_iri(DRDFDataloader* x,
-		const char* iri, size_t iri_len, Iri2Path* iri2path,
-		TripleHandler* handler, void* user)
-{
-	RET_TLDFI ret;
-	struct ret_TITD ret_titd;
-	const char* basefilename;
-	const char* fileext;
-	char* directory_path;
-	size_t len_basefilename;
-	DIR* searchdir;
-
-	ret_titd = transform_iri_to_directory_path(iri, iri_len, iri2path);
-	directory_path = ret_titd.directory_path;
-	basefilename = ret_titd.basefilename;
-
-	if (directory_path == NULL){
-		return RET_TLDFI_NOT_HANDLED_IRI;
-	}
-	len_basefilename = strlen(basefilename);
-	//Iri is handled by this iri2path. Try to find file:
-	searchdir = opendir(directory_path);
-	if (searchdir == NULL){
-		free(directory_path);
-		return RET_TLDFI_FAILURE;
-	}
-	ret = qq(basefilename, len_basefilename, directory_path, searchdir, handler, user);
-	free(directory_path);
 	closedir(searchdir);
-	return ret;
 }
-*/
 
 
 int DRDFDataloader_load_data(DRDFDataloader* x, const char* iri, TripleHandler* handler, void* user)
@@ -355,17 +253,6 @@ int DRDFDataloader_load_data(DRDFDataloader* x, const char* iri, TripleHandler* 
 		if(ret_titd.directory_path != NULL){
 			break;
 		}
-		/*
-		switch(try_load_data_file_iri(x, iri, liri, iri2path, handler, user))
-		{
-			case RET_TLDFI_SUCCESS:
-				return 0;
-			case RET_TLDFI_FAILURE:
-				return 1;
-			case RET_TLDFI_NOT_HANDLED_IRI:
-				break;
-		}
-		*/
 	}
 	if(ret_titd.directory_path == NULL){
 		fprintf(stderr, "ERROR DRDFDataloader_load_data(iri not "
@@ -373,25 +260,24 @@ int DRDFDataloader_load_data(DRDFDataloader* x, const char* iri, TripleHandler* 
 		return 1;
 	}
 
-	DIR* searchdir;
-	//Iri is handled by this iri2path. Try to find file:
-	searchdir = opendir(ret_titd.directory_path);
-	if (searchdir == NULL){
-		release_TITD(ret_titd);
-		return RET_TLDFI_FAILURE;
+	char* path;
+	path = find_feasible_file(ret_titd.basefilename, ret_titd.len_basefilename, ret_titd.directory_path);
+	int ret = 1;
+	if(path != NULL){
+		switch(load_local_data(path, handler, user)){
+			case RET_TLDFI_SUCCESS:
+				ret = 0;
+				break;
+			case RET_TLDFI_FAILURE:
+			case RET_TLDFI_NOT_HANDLED_IRI:
+			default:
+				ret = 1;
+		}
+	} else {
+		ret = 1;
 	}
-	RET_TLDFI ret = qq(ret_titd.basefilename, ret_titd.len_basefilename, ret_titd.directory_path, searchdir, handler, user);
 	release_TITD(ret_titd);
-	closedir(searchdir);
-
-	switch(ret){
-		case RET_TLDFI_SUCCESS:
-			return 0;
-		case RET_TLDFI_FAILURE:
-		case RET_TLDFI_NOT_HANDLED_IRI:
-		default:
-			return 1;
-	}
+	return ret;
 }
 
 static char* load_into_memory(const char* filepath){
